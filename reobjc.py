@@ -34,10 +34,28 @@ class REobjc:
         self.debugflag = False
         self.printxrefs = True
         self.target_objc_msgsend = []
+        self._get_arch()
         self._locate_objc_runtime_functions()
         if autorun:
             self.run()
         return None
+
+    def _get_arch(self):
+        info = idaapi.get_inf_structure()
+        self.proc_name = info.get_procName()
+        self.is_64bit = info.is_64bit()
+        if self.proc_name == "ARM":
+            if self.is_64bit:
+                self.arch = "arm64"
+            else:
+                self.arch = "arm32"
+        elif self.proc_name == "metapc":
+            if self.is_64bit:
+                self.arch = "x64"
+            else:
+                self.arch = "x86"
+        else:
+            raise ValueError("Unsupport architecture %s" %self.proc_name)
 
     def _locate_objc_runtime_functions(self):
         '''
@@ -170,7 +188,7 @@ class REobjc:
         if not target_method:
             return False
         
-        # After dereferencing across the IDB file, we finally have a target function. 
+        # After dereferencing across the IDB file, we finally have a target function.
         # In other words, if there isn't a method **in this binary** no xref is made (IDA only loads one binary?)
         # that is referenced from the mov rsi, <selector> instruction
         if self.debugflag: print("Found target method 0x%08x" % target_method)
@@ -189,19 +207,41 @@ class REobjc:
             f_end   = idc.get_func_attr(f, idc.FUNCATTR_END)
             
             try:
-                self.find_objc_calls(f)
+                if self.arch in ("x64"):
+                    self.find_objc_calls_x64(f)
+                elif self.arch in ("arm32", "arm64"):
+                    self.find_objc_calls_arm(f)
             except Exception as e:
                 fname = idc.get_name(idc.get_func_attr(f, idc.FUNCATTR_START))
                 print("\n\n[!!] Exception processing function %s: %s @ ea = 0x%08x (%dL)" % (fname, e, self.ea, self.ea))
                 traceback.print_exc()
                 print("\n\n")
                 
+    def extract_func(self, ea):
+        '''
+        This method will iterate over each function
+        '''
+        start = idc.get_func_attr(ea, idc.FUNCATTR_START)
+        end   = idc.get_func_attr(f, idc.FUNCATTR_END)
+        for f in idautils.Functions(start, end):
+            f_start = f # idc.get_func_attr(f, idc.FUNCATTR_START)
+            f_end   = idc.get_func_attr(f, idc.FUNCATTR_END)
             
+            try:
+                if self.arch in ("x64"):
+                    self.find_objc_calls_x64(f)
+                elif self.arch in ("arm32", "arm64"):
+                    self.find_objc_calls_arm(f)
+            except Exception as e:
+                fname = idc.get_name(idc.get_func_attr(f, idc.FUNCATTR_START))
+                print("\n\n[!!] Exception processing function %s: %s @ ea = 0x%08x (%dL)" % (fname, e, self.ea, self.ea))
+                traceback.print_exc()
+                print("\n\n")
 
     # f is an address in a function
     # done so there's not a requirement for f to be the start of a function. 
     # f = ScreenEA()
-    def find_objc_calls(self, f):
+    def find_objc_calls_x64(self, f):
 
             f_start = idc.get_func_attr(f, idc.FUNCATTR_START)
             f_end   = idc.get_func_attr(f, idc.FUNCATTR_END)
@@ -231,7 +271,7 @@ class REobjc:
                     if idc.get_operand_type(call_ea,0) == ida_ua.o_reg:
                         call_type = "indirect"                        
                         target_register = call_operand
-                        call_target_dict = self.resolve_register_backwalk_ea(call_ea, target_register)
+                        call_target_dict = self.resolve_register_backwalk_ea_x64(call_ea, target_register)
                         if call_target_dict:
                             call_target = call_target_dict["value"]
                     else:
@@ -239,7 +279,7 @@ class REobjc:
                         call_target = call_operand
                     
                     # check the list of functions from the objc runtime
-                    # call_target should be validated here, in case something fails with resolve_register_backwalk_ea()
+                    # call_target should be validated here, in case something fails with resolve_register_backwalk_ea_x64()
                     if call_target and self.lookup_objc_runtime_function(call_target):
                         if self.debugflag: print("%s call, operand_type == %s" % (call_type, idc.get_operand_type(call_ea,0)))
                         
@@ -248,18 +288,18 @@ class REobjc:
                         # inefficient to get all these if they're not needed
                         # returns dict
                         # TODO Eliminate hardcoded x64
-                        objc_self     = rdi = self.resolve_register_backwalk_ea(call_ea, "rdi")
-                        objc_selector = rsi = self.resolve_register_backwalk_ea(call_ea, "rsi")
-                        arg1_selector = rdx = self.resolve_register_backwalk_ea(call_ea, "rdx")
-                        arg2_selector = rcx = self.resolve_register_backwalk_ea(call_ea, "rcx")
-                        arg3_selector = r8  = self.resolve_register_backwalk_ea(call_ea, "r8")
-                        arg4_selector = r9  = self.resolve_register_backwalk_ea(call_ea, "r9")
+                        objc_self     = rdi = self.resolve_register_backwalk_ea_x64(call_ea, "rdi")
+                        objc_selector = rsi = self.resolve_register_backwalk_ea_x64(call_ea, "rsi")
+                        arg1_selector = rdx = self.resolve_register_backwalk_ea_x64(call_ea, "rdx")
+                        arg2_selector = rcx = self.resolve_register_backwalk_ea_x64(call_ea, "rcx")
+                        arg3_selector = r8  = self.resolve_register_backwalk_ea_x64(call_ea, "r8")
+                        arg4_selector = r9  = self.resolve_register_backwalk_ea_x64(call_ea, "r9")
                         
                         # RDI is the self pointer
                         # if RDI used in objc_msgsend is the same value passed into this function, 
-                        # resolve_register_backwalk_ea will return {value: rdi...}
+                        # resolve_register_backwalk_ea_x64 will return {value: rdi...}
                         # RDI is self, so figure out which class that self is
-                        # This code presumes that resolve_register_backwalk_ea() will find *some value* for RDI...
+                        # This code presumes that resolve_register_backwalk_ea_x64() will find *some value* for RDI...
                         # what if RDI is None? If the method is actually a selector, we can presume RDI is self, and pull 
                         # the class from the type of the first argument to the current function
                         # TODO add a check for ``not rdi`` here
@@ -285,9 +325,89 @@ class REobjc:
                             xref_created = self.objc_msgsend_xref(call_ea, objc_self['target_ea'], objc_selector['target_ea'])
                             if self.printxrefs and xref_created: print("0x%08x Creating xref: %s %s, %s" % (ea, idc.print_insn_mnem(ea), idc.print_operand(ea, 0), objc_selector['value']))
 
+    def find_objc_calls_arm(self, f):
+            f_start = idc.get_func_attr(f, idc.FUNCATTR_START)
+            f_end   = idc.get_func_attr(f, idc.FUNCATTR_END)
+        
+            for ea in idautils.Heads(f_start, f_end):
+                if self.debugflag: print("0x%08x '%s'" % (ea, idc.print_insn_mnem(ea)))
+
+                objc_selector = None
+                objc_selector_ea = None
+
+                if idc.print_insn_mnem(ea) == "BR" or idc.print_insn_mnem(ea) == "BL" or idc.print_insn_mnem(ea) == "BX" or idc.print_insn_mnem(ea) == "BLX":
+                    
+                    # global tracking of ea (only in this loop) to cite when exceptions are caught
+                    self.ea = ea
+                    
+                    call_ea = ea
+                    call_operand = idc.print_operand(call_ea, 0)
+                    call_type = None
+                    call_target = None
+                    
+                    # is this a BR <reg>
+                    # call_target is the address of the function being called
+                    # for indirect calls, resolve the register into a value
+                    # for direct calls, pull the value from the first operand
+                    if idc.get_operand_type(call_ea,0) == ida_ua.o_reg:
+                        call_type = "indirect"
+                        target_register = call_operand
+                        call_target_dict = self.resolve_register_backwalk_ea_arm(call_ea, target_register)
+                        if call_target_dict:
+                            call_target = call_target_dict["value"]
+                    else:
+                        call_type = "direct"
+                        call_target = call_operand          # here call_target is function name string in hexray
+
+                    # check the list of functions from the objc runtime
+                    # call_target should be validated here, in case something fails with resolve_register_backwalk_ea_arm()
+                    if call_target and self.lookup_objc_runtime_function(call_target):
+                        if self.debugflag: print("%s call, operand_type == %s" % (call_type, idc.get_operand_type(call_ea,0)))
+
+                        # get the argument values at the call
+                        # id objc_msgSend(id self, SEL op, ...);
+                        # inefficient to get all these if they're not needed
+                        # returns dict
+                        objc_self     = x0 = self.resolve_register_backwalk_ea_arm(call_ea, "X0")
+                        objc_selector = x1 = self.resolve_register_backwalk_ea_arm(call_ea, "X1")
+                        arg1_selector = x2 = self.resolve_register_backwalk_ea_arm(call_ea, "X2")
+                        arg2_selector = x3 = self.resolve_register_backwalk_ea_arm(call_ea, "X3")
+                        arg3_selector = x4 = self.resolve_register_backwalk_ea_arm(call_ea, "X4")
+                        arg4_selector = x5 = self.resolve_register_backwalk_ea_arm(call_ea, "X5")
+                        
+                        # change RDI to X0 for arm64
+
+                        # RDI is the self pointer
+                        # if RDI used in objc_msgsend is the same value passed into this function, 
+                        # resolve_register_backwalk_ea_x64 will return {value: rdi...}
+                        # RDI is self, so figure out which class that self is
+                        # This code presumes that resolve_register_backwalk_ea_x64() will find *some value* for RDI...
+                        # what if RDI is None? If the method is actually a selector, we can presume RDI is self, and pull 
+                        # the class from the type of the first argument to the current function
+                        # TODO add a check for ``not rdi`` here
+                        if not objc_self:
+                            # if RDI is None, that means the call is being sent to self
+                            # the first objc call on self wouldn't need to set an RDI value (because it was already set)
+                            
+                            # get the class from the function parameter type
+                            objc_class = self.resolve_objc_self_to_class(call_ea)
+                            
+                            # create a faked RDI dict
+                            # _faked_ key set here to differentiate from a 'real' RDI dict
+                            # TODO eliminate hardcoded x64
+                            objc_self = x0 = {"_faked_" : True, "target" : "x0", "value" : "x0", "target_ea" : f_start, "ea" : call_ea, "type" : -1}
+                        
+                        if objc_self and objc_self['value'] == 'x0':
+                            objc_class = self.resolve_objc_self_to_class(objc_self['target_ea'])
+                            if self.debugflag: print("### objc_class == %s" % objc_class)
+                        
+                        # objc_selector: address of instruction mov rsi, <selector>
+                        if objc_self and objc_selector:
+                            xref_created = self.objc_msgsend_xref(call_ea, objc_self['target_ea'], objc_selector['target_ea'])
+                            if self.printxrefs and xref_created: print("0x%08x Creating xref: %s %s, %s" % (ea, idc.print_insn_mnem(ea), idc.print_operand(ea, 0), objc_selector['value']))
 
 
-    def resolve_register_backwalk_ea(self, ea, target_dest_reg):
+    def resolve_register_backwalk_ea_x64(self, ea, target_dest_reg):
         '''
         Starting at ea, walk backward and locate the first instruction assigning a value to the target_register
         Keep walking backward, tracking the ultimate source to some value (register, variable, memory, etc)
@@ -304,7 +424,7 @@ class REobjc:
           (which is common in objc - alloc, init, <do something>), this code doesn't handle properly. 
           Essentially the class used in alloc results in rax of the instance, 
           and that RAX returned eventually is the RDI in the call to <do something>
-          Since this code returns previous_call in the returned dict, you could recursively call resolve_register_backwalk_ea
+          Since this code returns previous_call in the returned dict, you could recursively call resolve_register_backwalk_ea_x64
           using the previous_call EA until RDI is not from a previous call
         2 register tracking breaks when referencing registers of different bitwidths e.g. RAX/EAX/AL
         3 when ea points to a CALL <target_dest_reg>, the value of <target_dest_reg> isn't found. Workaround by passing ea-1
@@ -380,6 +500,65 @@ class REobjc:
         # fall through if nothing is found
         return None
 
+    def resolve_register_backwalk_ea_arm(self, ea, target_dest_reg):
+        f_start = idc.get_func_attr(ea, idc.FUNCATTR_START)
+        f_end   = idc.get_func_attr(ea, idc.FUNCATTR_END)
+
+        curr_ea = ea
+        dst = None
+        src = None
+        
+        target = target_dest_reg
+        target_value = None
+        target_ea = idc.BADADDR
+        target_type = None
+        previous_call = None
+
+        ret_dict = {}
+
+        if idc.print_insn_mnem(curr_ea) == "BR" and idc.print_operand(curr_ea, 0) == target_dest_reg:
+            curr_ea = idc.prev_head(curr_ea-1, f_start)
+
+        while curr_ea != idc.BADADDR:
+            instruction = idc.GetDisasm(curr_ea)
+                        
+            if self.debugflag: print("0x%08x %s" % (curr_ea, instruction))
+            
+            # looking for the previous place this register was assigned a value
+            mnem = idc.print_insn_mnem(curr_ea)
+            dst  = idc.print_operand(curr_ea, 0)
+            src  = idc.print_operand(curr_ea, 1)
+
+            if dst == target and (mnem == "mov" or mnem == "lea"):
+                target = src
+                target_value = src
+                target_ea = curr_ea
+                target_type = idc.get_operand_type(curr_ea,1)
+                if self.debugflag: print("            new target set %s (type=%d)" % (target, idc.get_operand_type(curr_ea,1)))
+                        
+            # take stab at tracking calls - this is not the greatest approach, but slightly more correct than doing no tracking
+            # call instruction affects RAX if it returns a result
+            # 
+            if dst == target == "rax" and mnem == "call":
+                target_value = "<return from previous call>"
+                previous_call = curr_ea
+                break
+
+
+            # step to previous instruction 
+            curr_ea = idc.prev_head(curr_ea-1, f_start)
+
+        if target_value: 
+            if self.verboseflag: print(">>> 0x%08x, %s is set to %s @ 0x%08x" % (ea, target_dest_reg, target_value, target_ea))
+            ret_dict = {"target" : target_dest_reg, "value" : target_value, "target_ea" : target_ea, "ea" : ea, "type" : target_type}
+
+            if previous_call:
+                ret_dict["previous_call"] = previous_call
+
+            return ret_dict
+
+        # fall through if nothing is found
+        return None
 
     def resolve_objc_self_to_class(self, ea):
         '''
